@@ -48,16 +48,27 @@ export function isMilitary(icao24: string | null | undefined): boolean {
  */
 async function fetchFromADSBone(): Promise<ADSBoneResponse> {
   // Strategic points to cover areas where Russian aircraft are commonly seen
-  // Each point covers up to 250 nautical miles radius
+  // Each point covers up to 250 nautical miles radius (~463 km)
+  // Optimized for tracking Russia → Gulf of Finland → Kaliningrad corridor
   const coveragePoints = [
-    { lat: 60.17, lon: 24.94, radius: 250 },   // Helsinki/Baltic
+    // Gulf of Finland & Baltic corridor (key area for Kaliningrad flights)
+    { lat: 60.17, lon: 24.94, radius: 250 },   // Helsinki/Gulf of Finland
+    { lat: 59.45, lon: 24.75, radius: 250 },   // Tallinn/Northern Estonia
+    { lat: 57.50, lon: 21.00, radius: 250 },   // Baltic Sea (Latvia coast)
+    { lat: 54.70, lon: 20.50, radius: 250 },   // Kaliningrad Oblast
+    { lat: 55.20, lon: 23.50, radius: 250 },   // Lithuania (covers Kaliningrad corridor)
+    { lat: 54.35, lon: 18.65, radius: 250 },   // Gdansk/Polish coast (Kaliningrad approach)
+    
+    // Russia mainland
+    { lat: 59.93, lon: 30.31, radius: 250 },   // St. Petersburg (departure point)
     { lat: 55.75, lon: 37.62, radius: 250 },   // Moscow area
-    { lat: 59.93, lon: 30.31, radius: 250 },   // St. Petersburg
-    { lat: 64.0, lon: 40.0, radius: 250 },     // Northern Russia
-    { lat: 55.0, lon: 82.0, radius: 250 },     // Novosibirsk/Siberia
     { lat: 56.0, lon: 44.0, radius: 250 },     // Nizhny Novgorod
-    { lat: 48.0, lon: 135.0, radius: 250 },    // Far East Russia
+    { lat: 64.0, lon: 40.0, radius: 250 },     // Northern Russia (Arkhangelsk)
     { lat: 68.0, lon: 33.0, radius: 250 },     // Murmansk/Arctic
+    
+    // Extended coverage
+    { lat: 55.0, lon: 82.0, radius: 250 },     // Novosibirsk/Siberia
+    { lat: 48.0, lon: 135.0, radius: 250 },    // Far East Russia
   ];
 
   const headers: Record<string, string> = {
