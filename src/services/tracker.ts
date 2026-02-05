@@ -1,5 +1,9 @@
 import { query } from '../db';
-import { ADSBoneAircraft, ADSBoneResponse, AircraftTrack, LiveAircraft, Position, TrackerResult } from '../types';
+import { ADSBoneAircraft, ADSBoneResponse, AircraftTrack, LiveAircraft, Position, TrackerResult, TrackSegment } from '../types';
+
+// Maximum gap in seconds before we consider it a "gap" in tracking
+// If an aircraft doesn't report for more than this, we split the track
+const MAX_POSITION_GAP_SECONDS = 180; // 3 minutes
 
 // Russian ICAO 24-bit address ranges (hex prefixes 140-157)
 // These correspond to aircraft registered in Russia
@@ -402,6 +406,69 @@ function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
 }
 
 /**
+ * Split positions into segments based on time gaps
+ * If there's a gap larger than MAX_POSITION_GAP_SECONDS between positions,
+ * we start a new segment and mark it as having a gap before it
+ */
+function splitIntoSegments(positions: Position[]): TrackSegment[] {
+  if (positions.length === 0) return [];
+  
+  const segments: TrackSegment[] = [];
+  let currentSegment: Position[] = [positions[0]];
+  
+  for (let i = 1; i < positions.length; i++) {
+    const prevTime = new Date(positions[i - 1].timestamp).getTime();
+    const currTime = new Date(positions[i].timestamp).getTime();
+    const gapSeconds = (currTime - prevTime) / 1000;
+    
+    if (gapSeconds > MAX_POSITION_GAP_SECONDS) {
+      // Save current segment and start a new one
+      if (currentSegment.length >= 1) {
+        segments.push({
+          positions: currentSegment,
+          hasGapBefore: segments.length > 0 ? false : false, // first segment has no gap before
+          gapDurationSeconds: undefined
+        });
+      }
+      // Start new segment with gap marker
+      currentSegment = [positions[i]];
+      // Mark this as having a gap before it (we'll update the NEXT segment's hasGapBefore)
+      // Actually, we need to track the gap for the segment we're about to create
+      segments.push({
+        positions: [],
+        hasGapBefore: true,
+        gapDurationSeconds: gapSeconds
+      });
+      // The empty segment is just a marker, we'll merge it next
+    } else {
+      currentSegment.push(positions[i]);
+    }
+  }
+  
+  // Add final segment
+  if (currentSegment.length >= 1) {
+    // Check if last segment in array is empty (gap marker)
+    if (segments.length > 0 && segments[segments.length - 1].positions.length === 0) {
+      const gapMarker = segments.pop()!;
+      segments.push({
+        positions: currentSegment,
+        hasGapBefore: true,
+        gapDurationSeconds: gapMarker.gapDurationSeconds
+      });
+    } else {
+      segments.push({
+        positions: currentSegment,
+        hasGapBefore: false,
+        gapDurationSeconds: undefined
+      });
+    }
+  }
+  
+  // Filter out any empty segments and ensure each has at least 2 positions for drawing
+  return segments.filter(s => s.positions.length >= 1);
+}
+
+/**
  * Get all aircraft tracks from the last 24 hours
  * Returns tracks grouped by aircraft with their position history
  * Optionally filters by center point and radius
@@ -451,6 +518,9 @@ export async function getAllTracksLast24h(
       });
     }
 
+    // Split positions into segments based on time gaps
+    const segments = splitIntoSegments(positions);
+
     // Only include aircraft with at least 2 positions (to draw a line)
     if (positions.length >= 2) {
       tracks.push({
@@ -458,6 +528,7 @@ export async function getAllTracksLast24h(
         callsign: ac.callsign,
         aircraft_type: ac.aircraft_type,
         positions,
+        segments,
         is_military: isMilitary(ac.icao24)
       });
     }

@@ -77,10 +77,17 @@ export interface LiveAircraft extends Aircraft {
   timestamp: Date;
 }
 
+export interface TrackSegment {
+  positions: Position[];
+  hasGapBefore: boolean;  // true if there was a large time gap before this segment
+  gapDurationSeconds?: number;  // duration of gap before this segment
+}
+
 export interface AircraftTrack {
   icao24: string;
   callsign: string | null;
   aircraft_type: string | null;
   positions: Position[];
+  segments: TrackSegment[];  // positions split by time gaps
   is_military: boolean;
 }
