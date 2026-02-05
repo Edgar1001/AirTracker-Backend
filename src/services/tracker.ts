@@ -43,6 +43,66 @@ export function isMilitary(icao24: string | null | undefined): boolean {
 }
 
 /**
+ * Fetch aircraft data from OpenSky Network API
+ * Free API with good MLAT coverage - https://opensky-network.org/apidoc/
+ */
+async function fetchFromOpenSky(): Promise<ADSBoneAircraft[]> {
+  // Bounding box for Baltic region and Russia (lamin, lomin, lamax, lomax)
+  const boundingBoxes = [
+    { lamin: 53, lomin: 14, lamax: 70, lomax: 32 },  // Baltic Sea, Scandinavia, Kaliningrad
+    { lamin: 50, lomin: 30, lamax: 70, lomax: 60 },  // Western Russia
+  ];
+
+  const headers: Record<string, string> = {
+    'User-Agent': 'AircraftTracker/1.0',
+    'Accept': 'application/json'
+  };
+
+  const allAircraft: ADSBoneAircraft[] = [];
+  const seenHex = new Set<string>();
+
+  for (const bbox of boundingBoxes) {
+    try {
+      const url = `https://opensky-network.org/api/states/all?lamin=${bbox.lamin}&lomin=${bbox.lomin}&lamax=${bbox.lamax}&lomax=${bbox.lomax}`;
+      const response = await fetch(url, { headers });
+
+      if (response.ok) {
+        const data = await response.json() as { time: number; states: (string | number | boolean | null)[][] };
+        if (data.states) {
+          for (const state of data.states) {
+            // OpenSky state vector format: [icao24, callsign, origin_country, time_position, last_contact, lon, lat, baro_altitude, on_ground, velocity, true_track, vertical_rate, sensors, geo_altitude, squawk, spi, position_source, category]
+            const hex = state[0] as string;
+            if (hex && !seenHex.has(hex)) {
+              seenHex.add(hex);
+              allAircraft.push({
+                hex: hex,
+                flight: (state[1] as string)?.trim() || undefined,
+                lat: state[6] as number | undefined,
+                lon: state[5] as number | undefined,
+                alt_baro: state[7] as number | undefined,
+                alt_geom: state[13] as number | undefined,
+                gs: state[9] as number | undefined,
+                track: state[10] as number | undefined,
+                baro_rate: state[11] as number | undefined,
+                squawk: state[14] as string | undefined,
+                category: state[17] as string | undefined,
+                // Mark source for debugging
+                _source: 'opensky'
+              } as ADSBoneAircraft);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error fetching from OpenSky:`, (error as Error).message);
+    }
+  }
+
+  console.log(`🌐 Fetched ${allAircraft.length} aircraft from OpenSky Network`);
+  return allAircraft;
+}
+
+/**
  * Fetch aircraft data from ADSBone API using multiple coverage points
  * ADSB.one doesn't have a global endpoint, so we use strategic points
  */
@@ -125,26 +185,54 @@ export async function cleanupOldData(): Promise<number> {
 }
 
 /**
- * Fetch and store Russian aircraft positions from ADSBone
+ * Fetch and store Russian aircraft positions from multiple sources (ADSB.one + OpenSky)
  */
 export async function fetchAndStoreRussianAircraft(): Promise<TrackerResult> {
   try {
     // First, cleanup old data (older than 24 hours)
     await cleanupOldData();
 
-    const data = await fetchFromADSBone();
+    // Fetch from multiple sources in parallel
+    const [adsbData, openSkyAircraft] = await Promise.all([
+      fetchFromADSBone(),
+      fetchFromOpenSky()
+    ]);
 
-    if (!data || !data.ac || data.ac.length === 0) {
-      console.log('⚠️ No aircraft data received from ADSBone');
+    // Merge aircraft from both sources, preferring ADSB.one data but filling gaps with OpenSky
+    const mergedAircraft: ADSBoneAircraft[] = [];
+    const seenHex = new Set<string>();
+
+    // Add ADSB.one aircraft first (usually more detailed)
+    if (adsbData?.ac) {
+      for (const ac of adsbData.ac) {
+        if (ac.hex) {
+          seenHex.add(ac.hex.toLowerCase());
+          mergedAircraft.push(ac);
+        }
+      }
+    }
+
+    // Add OpenSky aircraft that weren't in ADSB.one
+    for (const ac of openSkyAircraft) {
+      if (ac.hex && !seenHex.has(ac.hex.toLowerCase())) {
+        seenHex.add(ac.hex.toLowerCase());
+        mergedAircraft.push(ac);
+      }
+    }
+
+    console.log(`🔄 Merged ${mergedAircraft.length} aircraft (ADSB.one: ${adsbData?.ac?.length ?? 0}, OpenSky unique adds: ${mergedAircraft.length - (adsbData?.ac?.length ?? 0)})`);
+
+    if (mergedAircraft.length === 0) {
+      console.log('⚠️ No aircraft data received from any source');
       return { tracked: 0, stored: 0 };
     }
 
     // Filter for Russian aircraft only
-    const russianAircraft = data.ac.filter((ac: ADSBoneAircraft) => 
+    const russianAircraft = mergedAircraft.filter((ac: ADSBoneAircraft) => 
       isRussianAircraft(ac.hex)
     );
 
-    console.log(`📡 Found ${russianAircraft.length} Russian aircraft out of ${data.ac.length} total`);
+    console.log(`📡 Found ${russianAircraft.length} Russian aircraft out of ${mergedAircraft.length} total`);
 
     let storedCount = 0;
 
