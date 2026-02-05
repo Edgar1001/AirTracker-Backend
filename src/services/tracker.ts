@@ -43,23 +43,55 @@ export function isMilitary(icao24: string | null | undefined): boolean {
 }
 
 /**
- * Fetch aircraft data from ADSBone API (same as frontend)
+ * Fetch aircraft data from ADSBone API using multiple coverage points
+ * ADSB.one doesn't have a global endpoint, so we use strategic points
  */
 async function fetchFromADSBone(): Promise<ADSBoneResponse> {
-  const url = 'https://api.adsb.one/v2/all';
+  // Strategic points to cover areas where Russian aircraft are commonly seen
+  // Each point covers up to 250 nautical miles radius
+  const coveragePoints = [
+    { lat: 60.17, lon: 24.94, radius: 250 },   // Helsinki/Baltic
+    { lat: 55.75, lon: 37.62, radius: 250 },   // Moscow area
+    { lat: 59.93, lon: 30.31, radius: 250 },   // St. Petersburg
+    { lat: 64.0, lon: 40.0, radius: 250 },     // Northern Russia
+    { lat: 55.0, lon: 82.0, radius: 250 },     // Novosibirsk/Siberia
+    { lat: 56.0, lon: 44.0, radius: 250 },     // Nizhny Novgorod
+    { lat: 48.0, lon: 135.0, radius: 250 },    // Far East Russia
+    { lat: 68.0, lon: 33.0, radius: 250 },     // Murmansk/Arctic
+  ];
 
   const headers: Record<string, string> = {
     'User-Agent': 'AircraftTracker/1.0',
     'Accept': 'application/json'
   };
 
-  const response = await fetch(url, { headers });
+  const allAircraft: ADSBoneAircraft[] = [];
+  const seenHex = new Set<string>();
 
-  if (!response.ok) {
-    throw new Error(`ADSBone API error: ${response.status} ${response.statusText}`);
+  for (const point of coveragePoints) {
+    try {
+      const url = `https://api.adsb.one/v2/point/${point.lat}/${point.lon}/${point.radius}`;
+      const response = await fetch(url, { headers });
+
+      if (response.ok) {
+        const data = await response.json() as ADSBoneResponse;
+        if (data.ac) {
+          for (const ac of data.ac) {
+            // Avoid duplicates
+            if (ac.hex && !seenHex.has(ac.hex)) {
+              seenHex.add(ac.hex);
+              allAircraft.push(ac);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Error fetching from point ${point.lat},${point.lon}:`, (error as Error).message);
+    }
   }
 
-  return response.json() as Promise<ADSBoneResponse>;
+  console.log(`📡 Fetched ${allAircraft.length} total aircraft from ${coveragePoints.length} coverage points`);
+  return { ac: allAircraft, total: allAircraft.length, ctime: Date.now(), ptime: 0 };
 }
 
 /**
