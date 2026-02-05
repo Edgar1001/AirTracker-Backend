@@ -197,4 +197,34 @@ router.get('/:icao24/track', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * DELETE /api/aircraft/tracks
+ * Delete all Russian aircraft tracking data (positions and aircraft records)
+ */
+router.delete('/tracks', async (_req: Request, res: Response) => {
+  try {
+    // Delete all positions first (due to foreign key constraint)
+    const positionsResult = await query('DELETE FROM positions RETURNING id');
+    const positionsDeleted = positionsResult.rowCount ?? 0;
+
+    // Delete all aircraft records
+    const aircraftResult = await query('DELETE FROM aircraft RETURNING icao24');
+    const aircraftDeleted = aircraftResult.rowCount ?? 0;
+
+    console.log(`🗑️ Cleared tracking data: ${positionsDeleted} positions, ${aircraftDeleted} aircraft`);
+
+    res.json({
+      success: true,
+      message: 'All tracking data cleared',
+      deleted: {
+        positions: positionsDeleted,
+        aircraft: aircraftDeleted
+      }
+    });
+  } catch (error) {
+    console.error('Error clearing tracking data:', error);
+    res.status(500).json({ error: 'Failed to clear tracking data' });
+  }
+});
+
 export default router;
