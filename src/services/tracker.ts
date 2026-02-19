@@ -1,9 +1,5 @@
 import { query } from '../db';
-import { ADSBoneAircraft, ADSBoneResponse, AircraftTrack, LiveAircraft, Position, TrackerResult, TrackSegment } from '../types';
-
-// Maximum gap in seconds before we consider it a "gap" in tracking
-// If an aircraft doesn't report for more than this, we split the track
-const MAX_POSITION_GAP_SECONDS = 180; // 3 minutes
+import { ADSBoneAircraft, ADSBoneResponse, AircraftTrack, LiveAircraft, Position, TrackerResult } from '../types';
 
 // Russian ICAO 24-bit address ranges (hex prefixes 140-157)
 // These correspond to aircraft registered in Russia
@@ -44,66 +40,6 @@ export function isRussianAircraft(icao24: string | null): boolean {
  */
 export function isMilitary(icao24: string | null | undefined): boolean {
   return militaryHexCodes.has(icao24?.toLowerCase() ?? '');
-}
-
-/**
- * Fetch aircraft data from OpenSky Network API
- * Free API with good MLAT coverage - https://opensky-network.org/apidoc/
- */
-async function fetchFromOpenSky(): Promise<ADSBoneAircraft[]> {
-  // Bounding box for Baltic region and Russia (lamin, lomin, lamax, lomax)
-  const boundingBoxes = [
-    { lamin: 53, lomin: 14, lamax: 70, lomax: 32 },  // Baltic Sea, Scandinavia, Kaliningrad
-    { lamin: 50, lomin: 30, lamax: 70, lomax: 60 },  // Western Russia
-  ];
-
-  const headers: Record<string, string> = {
-    'User-Agent': 'AircraftTracker/1.0',
-    'Accept': 'application/json'
-  };
-
-  const allAircraft: ADSBoneAircraft[] = [];
-  const seenHex = new Set<string>();
-
-  for (const bbox of boundingBoxes) {
-    try {
-      const url = `https://opensky-network.org/api/states/all?lamin=${bbox.lamin}&lomin=${bbox.lomin}&lamax=${bbox.lamax}&lomax=${bbox.lomax}`;
-      const response = await fetch(url, { headers });
-
-      if (response.ok) {
-        const data = await response.json() as { time: number; states: (string | number | boolean | null)[][] };
-        if (data.states) {
-          for (const state of data.states) {
-            // OpenSky state vector format: [icao24, callsign, origin_country, time_position, last_contact, lon, lat, baro_altitude, on_ground, velocity, true_track, vertical_rate, sensors, geo_altitude, squawk, spi, position_source, category]
-            const hex = state[0] as string;
-            if (hex && !seenHex.has(hex)) {
-              seenHex.add(hex);
-              allAircraft.push({
-                hex: hex,
-                flight: (state[1] as string)?.trim() || undefined,
-                lat: state[6] as number | undefined,
-                lon: state[5] as number | undefined,
-                alt_baro: state[7] as number | undefined,
-                alt_geom: state[13] as number | undefined,
-                gs: state[9] as number | undefined,
-                track: state[10] as number | undefined,
-                baro_rate: state[11] as number | undefined,
-                squawk: state[14] as string | undefined,
-                category: state[17] as string | undefined,
-                // Mark source for debugging
-                _source: 'opensky'
-              } as ADSBoneAircraft);
-            }
-          }
-        }
-      }
-    } catch (error) {
-      console.error(`Error fetching from OpenSky:`, (error as Error).message);
-    }
-  }
-
-  console.log(`🌐 Fetched ${allAircraft.length} aircraft from OpenSky Network`);
-  return allAircraft;
 }
 
 /**
@@ -189,54 +125,26 @@ export async function cleanupOldData(): Promise<number> {
 }
 
 /**
- * Fetch and store Russian aircraft positions from multiple sources (ADSB.one + OpenSky)
+ * Fetch and store Russian aircraft positions from ADSBone
  */
 export async function fetchAndStoreRussianAircraft(): Promise<TrackerResult> {
   try {
     // First, cleanup old data (older than 24 hours)
     await cleanupOldData();
 
-    // Fetch from multiple sources in parallel
-    const [adsbData, openSkyAircraft] = await Promise.all([
-      fetchFromADSBone(),
-      fetchFromOpenSky()
-    ]);
+    const data = await fetchFromADSBone();
 
-    // Merge aircraft from both sources, preferring ADSB.one data but filling gaps with OpenSky
-    const mergedAircraft: ADSBoneAircraft[] = [];
-    const seenHex = new Set<string>();
-
-    // Add ADSB.one aircraft first (usually more detailed)
-    if (adsbData?.ac) {
-      for (const ac of adsbData.ac) {
-        if (ac.hex) {
-          seenHex.add(ac.hex.toLowerCase());
-          mergedAircraft.push(ac);
-        }
-      }
-    }
-
-    // Add OpenSky aircraft that weren't in ADSB.one
-    for (const ac of openSkyAircraft) {
-      if (ac.hex && !seenHex.has(ac.hex.toLowerCase())) {
-        seenHex.add(ac.hex.toLowerCase());
-        mergedAircraft.push(ac);
-      }
-    }
-
-    console.log(`🔄 Merged ${mergedAircraft.length} aircraft (ADSB.one: ${adsbData?.ac?.length ?? 0}, OpenSky unique adds: ${mergedAircraft.length - (adsbData?.ac?.length ?? 0)})`);
-
-    if (mergedAircraft.length === 0) {
-      console.log('⚠️ No aircraft data received from any source');
+    if (!data || !data.ac || data.ac.length === 0) {
+      console.log('⚠️ No aircraft data received from ADSBone');
       return { tracked: 0, stored: 0 };
     }
 
     // Filter for Russian aircraft only
-    const russianAircraft = mergedAircraft.filter((ac: ADSBoneAircraft) => 
+    const russianAircraft = data.ac.filter((ac: ADSBoneAircraft) => 
       isRussianAircraft(ac.hex)
     );
 
-    console.log(`📡 Found ${russianAircraft.length} Russian aircraft out of ${mergedAircraft.length} total`);
+    console.log(`📡 Found ${russianAircraft.length} Russian aircraft out of ${data.ac.length} total`);
 
     let storedCount = 0;
 
@@ -381,9 +289,9 @@ export async function getAircraftHistory(icao24: string, hours: number = 24): Pr
        on_ground,
        timestamp
      FROM positions
-     WHERE icao24 = $1 AND timestamp > NOW() - INTERVAL '${hours} hours'
+     WHERE icao24 = $1 AND timestamp > NOW() - ($2 || ' hours')::INTERVAL
      ORDER BY timestamp ASC`,
-    [icao24.toLowerCase()]
+    [icao24.toLowerCase(), hours]
   );
 
   return result.rows;
@@ -403,69 +311,6 @@ function haversineDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
     Math.sin(dLon / 2) * Math.sin(dLon / 2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return R * c;
-}
-
-/**
- * Split positions into segments based on time gaps
- * If there's a gap larger than MAX_POSITION_GAP_SECONDS between positions,
- * we start a new segment and mark it as having a gap before it
- */
-function splitIntoSegments(positions: Position[]): TrackSegment[] {
-  if (positions.length === 0) return [];
-  
-  const segments: TrackSegment[] = [];
-  let currentSegment: Position[] = [positions[0]];
-  
-  for (let i = 1; i < positions.length; i++) {
-    const prevTime = new Date(positions[i - 1].timestamp).getTime();
-    const currTime = new Date(positions[i].timestamp).getTime();
-    const gapSeconds = (currTime - prevTime) / 1000;
-    
-    if (gapSeconds > MAX_POSITION_GAP_SECONDS) {
-      // Save current segment and start a new one
-      if (currentSegment.length >= 1) {
-        segments.push({
-          positions: currentSegment,
-          hasGapBefore: segments.length > 0 ? false : false, // first segment has no gap before
-          gapDurationSeconds: undefined
-        });
-      }
-      // Start new segment with gap marker
-      currentSegment = [positions[i]];
-      // Mark this as having a gap before it (we'll update the NEXT segment's hasGapBefore)
-      // Actually, we need to track the gap for the segment we're about to create
-      segments.push({
-        positions: [],
-        hasGapBefore: true,
-        gapDurationSeconds: gapSeconds
-      });
-      // The empty segment is just a marker, we'll merge it next
-    } else {
-      currentSegment.push(positions[i]);
-    }
-  }
-  
-  // Add final segment
-  if (currentSegment.length >= 1) {
-    // Check if last segment in array is empty (gap marker)
-    if (segments.length > 0 && segments[segments.length - 1].positions.length === 0) {
-      const gapMarker = segments.pop()!;
-      segments.push({
-        positions: currentSegment,
-        hasGapBefore: true,
-        gapDurationSeconds: gapMarker.gapDurationSeconds
-      });
-    } else {
-      segments.push({
-        positions: currentSegment,
-        hasGapBefore: false,
-        gapDurationSeconds: undefined
-      });
-    }
-  }
-  
-  // Filter out any empty segments and ensure each has at least 2 positions for drawing
-  return segments.filter(s => s.positions.length >= 1);
 }
 
 /**
@@ -518,9 +363,6 @@ export async function getAllTracksLast24h(
       });
     }
 
-    // Split positions into segments based on time gaps
-    const segments = splitIntoSegments(positions);
-
     // Only include aircraft with at least 2 positions (to draw a line)
     if (positions.length >= 2) {
       tracks.push({
@@ -528,7 +370,6 @@ export async function getAllTracksLast24h(
         callsign: ac.callsign,
         aircraft_type: ac.aircraft_type,
         positions,
-        segments,
         is_military: isMilitary(ac.icao24)
       });
     }

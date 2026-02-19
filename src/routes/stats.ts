@@ -104,6 +104,7 @@ router.get('/daily', async (req: Request, res: Response) => {
   try {
     const { days = 30 } = req.query;
 
+    const daysNum = parseInt(days as string) || 30;
     const result = await query<DailyStatsRow>(
       `SELECT 
          date,
@@ -112,8 +113,9 @@ router.get('/daily', async (req: Request, res: Response) => {
          military_count,
          civilian_count
        FROM daily_stats
-       WHERE date > CURRENT_DATE - INTERVAL '${parseInt(days as string)} days'
-       ORDER BY date DESC`
+       WHERE date > CURRENT_DATE - ($1 || ' days')::INTERVAL
+       ORDER BY date DESC`,
+      [daysNum]
     );
 
     res.json({
@@ -161,18 +163,20 @@ router.get('/heatmap', async (req: Request, res: Response) => {
   try {
     const { hours = 24 } = req.query;
 
+    const hoursNum = parseInt(hours as string) || 24;
     const result = await query<HeatmapRow>(
       `SELECT 
          ROUND(latitude::numeric, 1) as lat,
          ROUND(longitude::numeric, 1) as lng,
          COUNT(*) as intensity
        FROM positions
-       WHERE timestamp > NOW() - INTERVAL '${parseInt(hours as string)} hours'
+       WHERE timestamp > NOW() - ($1 || ' hours')::INTERVAL
          AND latitude IS NOT NULL
          AND longitude IS NOT NULL
        GROUP BY ROUND(latitude::numeric, 1), ROUND(longitude::numeric, 1)
        ORDER BY intensity DESC
-       LIMIT 500`
+       LIMIT 500`,
+      [hoursNum]
     );
 
     res.json({

@@ -161,6 +161,42 @@ router.get('/:icao24/history', async (req: Request, res: Response) => {
 });
 
 /**
+ * DELETE /api/aircraft/russian
+ * Clear all Russian aircraft data from the database
+ */
+router.delete('/russian', async (_req: Request, res: Response) => {
+  try {
+    // Delete positions for Russian aircraft (icao24 starting with 140-157)
+    const positionsResult = await query(
+      `DELETE FROM positions 
+       WHERE icao24 IN (
+         SELECT icao24 FROM aircraft 
+         WHERE icao24 LIKE '14%' OR icao24 LIKE '15%'
+       )`
+    );
+
+    // Delete Russian aircraft records
+    const aircraftResult = await query(
+      `DELETE FROM aircraft 
+       WHERE icao24 LIKE '14%' OR icao24 LIKE '15%'`
+    );
+
+    console.log(`🗑️ Cleared Russian aircraft data: ${aircraftResult.rowCount} aircraft, ${positionsResult.rowCount} positions`);
+
+    res.json({
+      success: true,
+      deleted: {
+        aircraft: aircraftResult.rowCount || 0,
+        positions: positionsResult.rowCount || 0
+      }
+    });
+  } catch (error) {
+    console.error('Error clearing Russian aircraft data:', error);
+    res.status(500).json({ error: 'Failed to clear Russian aircraft data' });
+  }
+});
+
+/**
  * GET /api/aircraft/:icao24/track
  * Get position track as GeoJSON LineString
  */
@@ -194,36 +230,6 @@ router.get('/:icao24/track', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error fetching aircraft track:', error);
     res.status(500).json({ error: 'Failed to fetch aircraft track' });
-  }
-});
-
-/**
- * DELETE /api/aircraft/tracks
- * Delete all Russian aircraft tracking data (positions and aircraft records)
- */
-router.delete('/tracks', async (_req: Request, res: Response) => {
-  try {
-    // Delete all positions first (due to foreign key constraint)
-    const positionsResult = await query('DELETE FROM positions RETURNING id');
-    const positionsDeleted = positionsResult.rowCount ?? 0;
-
-    // Delete all aircraft records
-    const aircraftResult = await query('DELETE FROM aircraft RETURNING icao24');
-    const aircraftDeleted = aircraftResult.rowCount ?? 0;
-
-    console.log(`🗑️ Cleared tracking data: ${positionsDeleted} positions, ${aircraftDeleted} aircraft`);
-
-    res.json({
-      success: true,
-      message: 'All tracking data cleared',
-      deleted: {
-        positions: positionsDeleted,
-        aircraft: aircraftDeleted
-      }
-    });
-  } catch (error) {
-    console.error('Error clearing tracking data:', error);
-    res.status(500).json({ error: 'Failed to clear tracking data' });
   }
 });
 
